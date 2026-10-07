@@ -1,0 +1,8 @@
+# Install with scripts/setup_env.ps1 (torch must be installed first from the right index).
+# Pins come from dots.tts: pip install -r requirements.txt -c ../dots.tts/constraints/recommended.txt
+
+# dots.tts from the local clone, editable so we can add the scheduler hook to its source.
+-e ../dots.tts
+
+# Equivalence tests.
+pytest
