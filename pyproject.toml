@@ -1,0 +1,12 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "adaptive-nfe"
+version = "0.0.1"
+description = "Adaptive per-patch NFE scheduling for dots.tts"
+requires-python = ">=3.10,<3.13"
+
+[tool.setuptools.packages.find]
+where = ["src"]

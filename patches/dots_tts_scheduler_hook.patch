@@ -1,0 +1,29 @@
+diff --git a/src/dots_tts/models/dots_tts/model.py b/src/dots_tts/models/dots_tts/model.py
+index 98c6cc2..da7249e 100644
+--- a/src/dots_tts/models/dots_tts/model.py
++++ b/src/dots_tts/models/dots_tts/model.py
+@@ -142,6 +142,8 @@ class DotsTtsModel(nn.Module):
+         self._patch_encoder_inference_encoder_id: int | None = None
+         self._vocoder_inference: VocoderInference | None = None
+         self._vocoder_inference_vocoder_id: int | None = None
++        # Optional per-patch NFE scheduler; see _decode_next_audio.
++        self.nfe_scheduler: Any = None
+ 
+     def set_optimize(
+         self,
+@@ -1211,6 +1213,15 @@ class DotsTtsModel(nn.Module):
+             null_g_cond = state.fm_null_g_cond
+             if null_g_cond is None:
+                 raise RuntimeError("FM null conditioning buffer is not initialized.")
++            # Adaptive-compute hook: an attached scheduler picks this patch's NFE.
++            # None (the default) keeps the original fixed num_steps path.
++            nfe_scheduler = getattr(self, "nfe_scheduler", None)
++            if nfe_scheduler is not None:
++                num_steps = nfe_scheduler.next_nfe(
++                    patch_index=(profile_step or 1) - 1,
++                    default_nfe=num_steps,
++                    llm_hidden=state.llm_hiddens,
++                )
+             sampling = self.config.sampling
+             if sampling is not None:
+                 sampling.resolve(
