@@ -1,31 +1,59 @@
 # dot-tts-baseline
 
-Fixed-NFE baseline and scheduler integration work for dots.tts (WAT.ai GPU Systems).
+Internal repo for the WAT.ai GPU systems team. Setting up the baseline for the NFE scheduler and GPU execution calls on dots.tts. Testing with a fixed scheduler first (same NFE every patch) to make sure hooking in doesn't change anything.
 
-dots.tts lives in a separate clone next to this repo (`..\dots.tts`) and is installed into this repo's venv in editable mode, so edits to its source take effect immediately.
+## Folders
 
-## Setup (one time)
+- `patches/`: our edit to dots.tts (the scheduler hook), saved as a git patch so anyone can apply it to their clone
+- `src/adaptive_nfe/`: the scheduler code
+- `scripts/`: setup (`setup_env.sh`), the comparison test (`check_equivalence.py`), and `inspect_dit.py` for poking at the DiT
+- `runs/`: results from running the scripts (reports, wavs). Not committed, it's in .gitignore
 
-From this repo's root, with the NVIDIA GPU enabled:
+## What's going on
 
-```powershell
-nvidia-smi                          # GPU visible? driver 570+ needed for cu128
-.\scripts\setup_env.ps1 -Device cuda  # or -Device cpu
+dots.tts makes audio one patch (~160 ms) at a time, and each patch gets `num_steps` denoising steps from the DiT. Right now every patch gets the same number. Plan is to let a scheduler pick it per patch.
+
+Before doing anything smart, we checked that plugging a scheduler in gives the exact same output as stock dots.tts when it just returns a constant.
+
+- `patches/dots_tts_scheduler_hook.patch`: 11 line change to dots.tts `model.py`. Adds `model.nfe_scheduler` (None by default). If set, it gets asked for `num_steps` before each patch.
+- `src/adaptive_nfe/scheduler.py`: `Scheduler` base class (logs every choice) and `FixedScheduler(n)`.
+- `scripts/check_equivalence.py`: the test. Same seed, for each text and NFE N it runs stock twice (A, A2) and once with `FixedScheduler(N)` (B). B is called with `num_steps=1` so it only passes if the hook actually works. Compares every patch and the final audio with `torch.equal`, and counts DiT calls per patch.
+- `scripts/inspect_dit.py`: dumps velocity per step + EOS prob per patch. Might be useful later for deciding which patches are "hard".
+
+All eager mode (`optimize=False`), bf16, seed 42, dots.tts commit `3cb6f94`.
+
+## Results
+
+First run (Oct 11, RTX 5060 Laptop 8 GB, torch 2.8.0+cu128): **all pass**. FixedScheduler output is bit for bit identical to stock at every NFE, and stock matches itself run to run, so exact comparison works on GPU.
+
+| text | NFE | patches | stock vs stock | stock vs FixedScheduler | DiT calls per patch |
+|---|---|---|---|---|---|
+| "Hello, this is a quick speech synthesis test." | 4 | 23 | identical | identical | 4 |
+| | 10 | 22 | identical | identical | 10 |
+| | 32 | 21 | identical | identical | 32 |
+| "The scheduler decides how many denoising steps each patch of audio receives." | 4 | 29 | identical | identical | 4 |
+| | 10 | 27 | identical | identical | 10 |
+| | 32 | 28 | identical | identical | 32 |
+
+"Identical" means `torch.equal` on every patch and on the final waveform. Patch count changes a bit with NFE because the audio comes out slightly different, so the EOS head stops at a different point.
+
+## Running it
+
+WSL/Linux only (pynini won't build on Windows).
+
+```bash
+git clone https://github.com/tonyyytan/dot-tts-baseline.git
+git clone https://github.com/studio-dots-ai/dots.tts.git
+cd dots.tts && git switch -c scheduler-hook 3cb6f94
+git apply ../dot-tts-baseline/patches/dots_tts_scheduler_hook.patch
+cd ../dot-tts-baseline && bash scripts/setup_env.sh && source .venv/bin/activate
+python scripts/check_equivalence.py --nfe 4 10 32
 ```
 
-The last line of the setup output should say `cuda available: True`. The checkpoint (`dots-studio/dots.tts-base`) downloads from Hugging Face on the first `from_pretrained`.
+First run downloads the weights. Output ends up in `runs/equivalence/<timestamp>/`.
 
-In VS Code, select `.venv\Scripts\python.exe` as the interpreter.
+## Todo
 
-## Scripts
-
-| Script | What it does |
-|---|---|
-| `scripts/run_baseline.py` | Calls unmodified `generate()` at a fixed NFE. Saves `audio.wav`, `audio.pt` (exact tensor), and `config.json` under `runs/`. This is the reference for the equivalence test. |
-| `scripts/trace_nfe.py` | Same call with counters wrapped around the patch loop and the ODE-step loop. Prints how many steps each patch got. |
-
-```powershell
-.\.venv\Scripts\python.exe scripts\trace_nfe.py --text "Hello there." --num-steps 10 --precision bfloat16
-```
-
-Always use `optimize=False` and a fixed seed when comparing outputs.
+- try `optimize=True` (KV cache is sized per NFE so varying it will probably break)
+- actual variable NFE scheduler
+- sort out logging format + executor interface with everyone
