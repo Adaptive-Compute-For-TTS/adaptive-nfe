@@ -5,8 +5,10 @@ Internal repo for the WAT.ai GPU systems team. Setting up the baseline for the N
 ## Folders
 
 - `patches/`: our edit to dots.tts (the scheduler hook), saved as a git patch so anyone can apply it to their clone
-- `src/adaptive_nfe/`: the scheduler code
+- `src/adaptive_nfe/`: the scheduler (`scheduler.py`) and the DiT executor (`executor.py`, `ode.py`)
 - `scripts/`: setup (`setup_env.sh`), the comparison test (`check_equivalence.py`), and `inspect_dit.py` for poking at the DiT
+- `tests/`: fast checks that need no model weights (`pytest tests/`)
+- `docs/design/`: executor design (`executor-baseline.md`) and next-phase notes (`batching-exploration.md`)
 - `runs/`: results from running the scripts (reports, wavs). Not committed, it's in .gitignore
 
 ## What's going on
@@ -51,6 +53,19 @@ python scripts/check_equivalence.py --nfe 4 10 32
 ```
 
 First run downloads the weights. Output ends up in `runs/equivalence/<timestamp>/`.
+
+### Executor
+
+`adaptive_nfe.Executor` runs the DiT for one patch at a given NFE (baseline: eager, Euler, one request). It has to reproduce stock exactly. To check:
+
+```bash
+pytest tests/                                              # no weights, CPU, a few seconds
+python scripts/check_equivalence.py --nfe 4 10 32 --executor   # full model: B goes through the executor
+```
+
+- `tests/test_ode.py`: our Euler loop vs `torchdiffeq.odeint`, bit for bit, NFE 1–64.
+- `tests/test_executor.py`: `Executor.decode_patch` vs stock `DiTSolver.decode_next` on a tiny random DiT, fp32 and bf16 (autocast), including RNG consumption.
+- `--executor` routes B's DiT calls through the executor by wrapping `DiTSolver.decode_next`, so dots.tts itself isn't edited. The report adds `executor_used_ok`.
 
 ## Todo
 

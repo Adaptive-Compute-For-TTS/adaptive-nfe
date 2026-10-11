@@ -7,13 +7,18 @@ For each text and each N, three runs with the same seed:
   B   scheduler:     generate(num_steps=DECOY) with FixedScheduler(N) attached. DECOY != N on purpose:
                       if the hook were ignored, B would run at DECOY steps and fail loudly.
 
+With --executor, B also runs every patch through adaptive_nfe.Executor instead of dots.tts's own
+DiTSolver (eager path), so the comparison checks the executor reproduces stock exactly.
+
 Compared per run: every patch latent the DiT produced (torch.equal), and the final waveform.
-Also checked for B: the scheduler log says N for every patch, and the DiT really ran N times per patch.
+Also checked for B: the scheduler log says N for every patch, and the DiT really ran N times per patch
+(and, with --executor, that the executor decoded every patch).
 
 Needs the dots.tts clone on branch scheduler-hook. Exit code 1 if anything mismatches.
 
 Example:
     python scripts/check_equivalence.py --nfe 4 10 32
+    python scripts/check_equivalence.py --nfe 4 10 32 --executor
 """
 
 from __future__ import annotations
@@ -29,8 +34,9 @@ from pathlib import Path
 import soundfile as sf
 import torch
 from adaptive_nfe import FixedScheduler
+from adaptive_nfe.executor import Executor
 from dots_tts.models.dots_tts.model import DotsTtsModel
-from dots_tts.modules.backbone.dit_inference import EagerDiTRunner
+from dots_tts.modules.backbone.dit_inference import DiTSolver, EagerDiTRunner
 from dots_tts.runtime import DotsTtsRuntime
 from dots_tts.utils.util import seed_everything
 
@@ -47,9 +53,11 @@ class Capture:
     patches: list[torch.Tensor] = field(default_factory=list)  # DiT output per patch, on CPU
     steps: list[int] = field(default_factory=list)  # DiT forward passes per patch
     audio: torch.Tensor | None = None
+    executor_patches: int = 0  # patches decoded by the Executor instead of DiTSolver
 
 
 current: Capture | None = None  # the run being recorded right now
+current_executor: Executor | None = None  # set during runs that should go through the executor
 
 
 def install_capture_hooks() -> None:
@@ -73,9 +81,44 @@ def install_capture_hooks() -> None:
     EagerDiTRunner._flow_matching_velocity = velocity_wrapper
 
 
-def run(runtime: DotsTtsRuntime, text: str, *, num_steps: int, scheduler, seed: int) -> Capture:
-    global current
+def install_executor_route() -> None:
+    """Send the eager flow-matching DiT call through `current_executor` when one is set.
+
+    Same effect as the hook in docs/design/executor-baseline.md (D1), without editing dots.tts.
+    """
+    decode_next = DiTSolver.decode_next
+
+    @functools.wraps(decode_next)
+    def decode_next_wrapper(self, state, **kwargs):
+        if current_executor is None or self.optimize or self.meanflow:
+            return decode_next(self, state, **kwargs)
+        self._validate_decode_args(
+            fm_seq_len=kwargs["fm_seq_len"],
+            nfe=kwargs["nfe"],
+            cfg_sequence=kwargs.get("cfg_sequence"),
+            guidance_scale=kwargs.get("guidance_scale"),
+        )
+        sequence, null_g_cond, g_cond = kwargs["sequence"], kwargs["null_g_cond"], kwargs["g_cond"]
+        g_cond = null_g_cond if g_cond is None else g_cond.to(device=null_g_cond.device, dtype=sequence.dtype)
+        current.executor_patches += 1
+        return current_executor.decode_patch(
+            sequence=sequence,
+            cfg_sequence=kwargs["cfg_sequence"],
+            fm_seq_len=int(kwargs["fm_seq_len"]),
+            g_cond=g_cond,
+            nfe=int(kwargs["nfe"]),
+            guidance_scale=kwargs["guidance_scale"],
+            ode_method=kwargs.get("ode_method", "euler"),
+        )
+
+    DiTSolver.decode_next = decode_next_wrapper
+
+
+def run(runtime: DotsTtsRuntime, text: str, *, num_steps: int, scheduler, seed: int,
+        executor: Executor | None = None) -> Capture:
+    global current, current_executor
     current = Capture()
+    current_executor = executor
     runtime.model.nfe_scheduler = scheduler
     if scheduler is not None:
         scheduler.reset()
@@ -84,6 +127,7 @@ def run(runtime: DotsTtsRuntime, text: str, *, num_steps: int, scheduler, seed: 
         result = runtime.generate(text=text, num_steps=num_steps)
     finally:
         runtime.model.nfe_scheduler = None
+        current_executor = None
     current.audio = result["audio"].detach().float().cpu()
     return current
 
@@ -118,11 +162,14 @@ def main() -> int:
     p.add_argument("--precision", default="bfloat16")
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--out-dir", default="runs/equivalence")
+    p.add_argument("--executor", action="store_true", help="Run B's DiT through adaptive_nfe.Executor.")
     args = p.parse_args()
     texts = args.text or DEFAULT_TEXTS
 
     install_capture_hooks()
+    install_executor_route()
     runtime = DotsTtsRuntime.from_pretrained(args.model, precision=args.precision, optimize=False)
+    executor = Executor(runtime.model) if args.executor else None
     out_dir = Path(args.out_dir) / time.strftime("%Y%m%d-%H%M%S")
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -133,7 +180,7 @@ def main() -> int:
             scheduler = FixedScheduler(nfe)
             a = run(runtime, text, num_steps=nfe, scheduler=None, seed=args.seed)
             a2 = run(runtime, text, num_steps=nfe, scheduler=None, seed=args.seed)
-            b = run(runtime, text, num_steps=decoy, scheduler=scheduler, seed=args.seed)
+            b = run(runtime, text, num_steps=decoy, scheduler=scheduler, seed=args.seed, executor=executor)
 
             row = {
                 "text": text,
@@ -143,22 +190,25 @@ def main() -> int:
                 "original_vs_scheduler": compare(a, b),
                 "scheduler_log_ok": [h["nfe"] for h in scheduler.history] == [nfe] * len(b.patches),
                 "dit_steps_per_patch_ok": b.steps == [nfe] * len(b.patches) and a.steps == b.steps,
+                "executor_used_ok": b.executor_patches == (len(b.patches) if executor else 0),
                 "dit_steps_per_patch": b.steps,
                 "scheduler_history": scheduler.history,
             }
             row["pass"] = (
                 row["original_vs_scheduler"]["equal"] and row["scheduler_log_ok"] and row["dit_steps_per_patch_ok"]
+                and row["executor_used_ok"]
             )
             report.append(row)
 
-            for name, cap in (("original", a), ("scheduler", b)):
+            b_name = "executor" if executor else "scheduler"
+            for name, cap in (("original", a), (b_name, b)):
                 sf.write(out_dir / f"t{t_idx}_nfe{nfe}_{name}.wav", cap.audio.squeeze().numpy(), runtime.sample_rate)
 
             status = "PASS" if row["pass"] else "FAIL"
             det = "deterministic" if row["original_vs_itself"]["equal"] else "NOT deterministic"
             print(f"[{status}] text {t_idx} nfe={nfe:<3} patches={len(b.patches):<3} original is {det}")
             if not row["pass"]:
-                print("       ", json.dumps({k: row[k] for k in ("original_vs_scheduler", "scheduler_log_ok", "dit_steps_per_patch_ok")}))
+                print("       ", json.dumps({k: row[k] for k in ("original_vs_scheduler", "scheduler_log_ok", "dit_steps_per_patch_ok", "executor_used_ok")}))
 
     config = {**vars(args), "texts": texts, "torch": torch.__version__, "cuda": torch.version.cuda,
               "device": str(runtime.device),
