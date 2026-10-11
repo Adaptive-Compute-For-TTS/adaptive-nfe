@@ -5,8 +5,10 @@ Internal repo for the WAT.ai GPU systems team. Setting up the baseline for the N
 ## Folders
 
 - `patches/`: our edit to dots.tts (the scheduler hook), saved as a git patch so anyone can apply it to their clone
-- `src/adaptive_nfe/`: the scheduler code
+- `src/adaptive_nfe/`: the scheduler (`scheduler.py`) and the DiT executor (`executor.py`, `ode.py`)
 - `scripts/`: setup (`setup_env.sh`), the comparison test (`check_equivalence.py`), and `inspect_dit.py` for poking at the DiT
+- `tests/`: fast checks that need no model weights (`pytest tests/`)
+- `docs/design/`: executor design (`executor-baseline.md`) and next-phase notes (`batching-exploration.md`)
 - `runs/`: results from running the scripts (reports, wavs). Not committed, it's in .gitignore
 
 ## What's going on
@@ -37,6 +39,8 @@ First run (Oct 11, RTX 5060 Laptop 8 GB, torch 2.8.0+cu128): **all pass**. Fixed
 
 "Identical" means `torch.equal` on every patch and on the final waveform. Patch count changes a bit with NFE because the audio comes out slightly different, so the EOS head stops at a different point.
 
+**Executor** (`--executor`, same setup, torchdiffeq 0.2.5): **all pass**. Running B through `adaptive_nfe.Executor` instead of dots.tts's solver gives the same table: every patch and the waveform identical to stock, same patch counts (23/22/21, 29/27/28), N DiT calls per patch, and every patch went through the executor. `pytest tests/`: 163 passed.
+
 ## Running it
 
 WSL/Linux only (pynini won't build on Windows).
@@ -51,6 +55,15 @@ python scripts/check_equivalence.py --nfe 4 10 32
 ```
 
 First run downloads the weights. Output ends up in `runs/equivalence/<timestamp>/`.
+
+### Executor
+
+`adaptive_nfe.Executor` runs the DiT for one patch at a given NFE (eager, Euler, one request) and must reproduce stock exactly. Design: `docs/design/executor-baseline.md`.
+
+```bash
+pytest tests/                                                  # no weights, CPU, seconds
+python scripts/check_equivalence.py --nfe 4 10 32 --executor   # full model through the executor
+```
 
 ## Todo
 
