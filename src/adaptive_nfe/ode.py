@@ -26,10 +26,8 @@ Velocity = Callable[[torch.Tensor, torch.Tensor], torch.Tensor]
 
 def euler_time_grid(nfe: int, *, dtype: torch.dtype, device: torch.device | str) -> torch.Tensor:
     """Grid from 0 to 1 that torchdiffeq builds for step_size = 1/nfe."""
-    if nfe <= 0:
-        raise ValueError(f"nfe must be positive, got {nfe}.")
     t = torch.tensor([0.0, 1.0], dtype=dtype, device=device)
-    step_size = 1.0 / int(nfe)
+    step_size = 1.0 / nfe
     niters = torch.ceil((t[-1] - t[0]) / step_size + 1).item()
     grid = torch.arange(0, niters, dtype=t.dtype, device=t.device) * step_size + t[0]
     grid[-1] = t[-1]
@@ -42,5 +40,5 @@ def euler_integrate(velocity: Velocity, z0: torch.Tensor, nfe: int) -> torch.Ten
     z = z0
     for t0, t1 in zip(grid[:-1], grid[1:]):
         dt = t1 - t0
-        z = z + dt * velocity(t0.to(z.abs().dtype), z)
+        z = z + dt * velocity(t0.to(z.dtype), z)
     return z.to(z0.dtype)

@@ -42,14 +42,14 @@ class Executor:
         """
         if ode_method != "euler":
             raise NotImplementedError(f"Executor only supports ode_method='euler', got {ode_method!r}.")
-        if int(nfe) <= 0:
+        if nfe <= 0:
             raise ValueError(f"nfe must be positive, got {nfe}.")
-        if int(fm_seq_len) <= 0:
+        if fm_seq_len <= 0:
             raise RuntimeError("Cannot decode audio before any conditioning state has been prefetched.")
 
         runner = self.runner
         input_sequence, cfg_input_sequence, attn_mask, pos_ids = runner._prepare_inputs(
-            sequence=sequence, cfg_sequence=cfg_sequence, fm_seq_len=int(fm_seq_len)
+            sequence=sequence, cfg_sequence=cfg_sequence, fm_seq_len=fm_seq_len
         )
         guidance = sequence.new_tensor(float(guidance_scale))
 
@@ -73,4 +73,4 @@ class Executor:
                 guidance_scale=guidance,
             )
 
-        return euler_integrate(velocity, noise, int(nfe))
+        return euler_integrate(velocity, noise, nfe)
