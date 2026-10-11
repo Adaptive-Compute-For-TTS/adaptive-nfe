@@ -71,24 +71,7 @@ The executor reuses dots.tts's own input preparation and DiT call, and owns the 
 
 Reusing `_flow_matching_velocity` has a side benefit: `check_equivalence.py` counts DiT calls by wrapping that method, so the call counting keeps working unchanged.
 
-**The Euler loop has to reproduce `torchdiffeq`'s fixed-grid Euler exactly** (checked against torchdiffeq 0.2.5, `_impl/solvers.py`):
-
-```python
-# t = torch.tensor([0.0, 1.0], dtype=sequence.dtype)   # bf16, as stock
-step = 1.0 / nfe                                       # Python float
-niters = torch.ceil((t[-1] - t[0]) / step + 1).item()
-grid = torch.arange(0, niters, dtype=t.dtype, device=t.device) * step + t[0]
-grid[-1] = t[-1]                                       # last point forced to exactly 1.0
-z = noise
-for t0, t1 in zip(grid[:-1], grid[1:]):
-    dt = t1 - t0                                       # recomputed per step, in bf16
-    z = z + dt * velocity(t0, z)                       # dy = dt * f0;  y1 = y0 + dy
-return z
-```
-
-**Why this matters:** the grid is built in bf16, so the timesteps are rounded and `dt` isn't exactly `1/nfe` at every step. A "clean" loop (`t = k/nfe`, `dt = 1/nfe`) would not be bit-identical to stock.
-
-**Fallback:** if the hand-written loop can't be made bit-exact, call `odeint` exactly as stock does for the baseline, and move the custom loop to the batching phase.
+**The Euler loop must reproduce `torchdiffeq`'s fixed-grid Euler exactly.** Its time grid is built in bf16, so the timesteps are rounded and `dt` isn't exactly `1/nfe`. A plain `t = k/nfe` loop differs from stock at every non-power-of-two NFE. The exact rules are in the `src/adaptive_nfe/ode.py` docstring.
 
 ## D3: Noise
 
@@ -108,12 +91,14 @@ return z
 
 ## Testing
 
-Implemented in `src/adaptive_nfe/executor.py` (executor) and `src/adaptive_nfe/ode.py` (Euler loop).
+```bash
+pytest tests/                                                  # no weights, CPU, seconds
+python scripts/check_equivalence.py --nfe 4 10 32 --executor   # full model, needs ALL PASS
+```
 
-1. **`pytest tests/`** needs no weights and runs on CPU in seconds.
-   - `test_ode.py`: our Euler loop vs `torchdiffeq.odeint`, bit for bit, NFE 1–32, 40, 64, in bf16 and fp32. The test catches a "clean" loop (`t = k/nfe`, `dt = 1/nfe`), which differs from stock at NFE 3, 5, 10, … (every non-power of two).
-   - `test_executor.py`: `Executor.decode_patch` vs stock `DiTSolver.decode_next` on a tiny random DiT built from dots.tts's own classes. Covers fp32 and bf16 under autocast, with and without speaker conditioning, first and later patches, and that both consume the RNG identically.
-2. **`python scripts/check_equivalence.py --nfe 4 10 32 --executor`** runs the full model. B's DiT calls go through the executor by wrapping `DiTSolver.decode_next`, the same logic as the hook in [D1](#d1-interface-and-hook), so dots.tts isn't edited. Needs ALL PASS, plus `executor_used_ok` (every patch decoded by the executor).
+- `test_ode.py`: Euler loop vs `torchdiffeq.odeint`, bit for bit.
+- `test_executor.py`: `decode_patch` vs stock `DiTSolver.decode_next` on a tiny random DiT, including RNG consumption.
+- `--executor` routes run B through the executor by wrapping `DiTSolver.decode_next` (same logic as the [D1](#d1-interface-and-hook) hook), and checks every patch went through it.
 
 ## Open questions
 

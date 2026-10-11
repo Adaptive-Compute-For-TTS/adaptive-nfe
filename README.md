@@ -56,16 +56,12 @@ First run downloads the weights. Output ends up in `runs/equivalence/<timestamp>
 
 ### Executor
 
-`adaptive_nfe.Executor` runs the DiT for one patch at a given NFE (baseline: eager, Euler, one request). It has to reproduce stock exactly. To check:
+`adaptive_nfe.Executor` runs the DiT for one patch at a given NFE (eager, Euler, one request) and must reproduce stock exactly. Design: `docs/design/executor-baseline.md`.
 
 ```bash
-pytest tests/                                              # no weights, CPU, a few seconds
-python scripts/check_equivalence.py --nfe 4 10 32 --executor   # full model: B goes through the executor
+pytest tests/                                                  # no weights, CPU, seconds
+python scripts/check_equivalence.py --nfe 4 10 32 --executor   # full model through the executor
 ```
-
-- `tests/test_ode.py`: our Euler loop vs `torchdiffeq.odeint`, bit for bit, NFE 1–64.
-- `tests/test_executor.py`: `Executor.decode_patch` vs stock `DiTSolver.decode_next` on a tiny random DiT, fp32 and bf16 (autocast), including RNG consumption.
-- `--executor` routes B's DiT calls through the executor by wrapping `DiTSolver.decode_next`, so dots.tts itself isn't edited. The report adds `executor_used_ok`.
 
 ## Todo
 
