@@ -1,17 +1,18 @@
 diff --git a/src/dots_tts/models/dots_tts/model.py b/src/dots_tts/models/dots_tts/model.py
-index 98c6cc2..da7249e 100644
+index 98c6cc2..9fd07f7 100644
 --- a/src/dots_tts/models/dots_tts/model.py
 +++ b/src/dots_tts/models/dots_tts/model.py
-@@ -142,6 +142,8 @@ class DotsTtsModel(nn.Module):
+@@ -142,6 +142,9 @@ class DotsTtsModel(nn.Module):
          self._patch_encoder_inference_encoder_id: int | None = None
          self._vocoder_inference: VocoderInference | None = None
          self._vocoder_inference_vocoder_id: int | None = None
-+        # Optional per-patch NFE scheduler; see _decode_next_audio.
++        # Optional per-patch NFE scheduler and DiT executor; see _decode_next_audio.
 +        self.nfe_scheduler: Any = None
++        self.dit_executor: Any = None
  
      def set_optimize(
          self,
-@@ -1211,6 +1213,15 @@ class DotsTtsModel(nn.Module):
+@@ -1211,6 +1214,15 @@ class DotsTtsModel(nn.Module):
              null_g_cond = state.fm_null_g_cond
              if null_g_cond is None:
                  raise RuntimeError("FM null conditioning buffer is not initialized.")
@@ -27,3 +28,31 @@ index 98c6cc2..da7249e 100644
              sampling = self.config.sampling
              if sampling is not None:
                  sampling.resolve(
+@@ -1225,6 +1237,27 @@ class DotsTtsModel(nn.Module):
+             solver_cfg_sequence = (
+                 cfg_sequence if solver_mode == "flow_matching" else None
+             )
++            # Execution hook: an attached executor runs the DiT for this patch instead of
++            # the built-in solver. None (the default) keeps the original path.
++            dit_executor = getattr(self, "dit_executor", None)
++            if dit_executor is not None:
++                if solver_mode != "flow_matching" or self._optimize_enabled:
++                    raise NotImplementedError(
++                        "dit_executor only supports flow_matching with optimize=False."
++                    )
++                return dit_executor.decode_patch(
++                    sequence=sequence,
++                    cfg_sequence=solver_cfg_sequence,
++                    fm_seq_len=state.fm_seq_len,
++                    g_cond=(
++                        null_g_cond
++                        if g_cond is None
++                        else g_cond.to(device=null_g_cond.device, dtype=sequence.dtype)
++                    ),
++                    nfe=num_steps,
++                    ode_method=ode_method,
++                    guidance_scale=guidance_scale,
++                )
+             audio_patch = self._get_dit_solver(solver_mode=solver_mode).decode_next(
+                 state.fm_dit_state,
+                 sequence=sequence,

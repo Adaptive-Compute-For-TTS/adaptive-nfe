@@ -98,7 +98,7 @@ python scripts/check_equivalence.py --nfe 4 10 32 --executor   # full model, nee
 
 - `test_ode.py`: Euler loop vs `torchdiffeq.odeint`, bit for bit.
 - `test_executor.py`: `decode_patch` vs stock `DiTSolver.decode_next` on a tiny random DiT, including RNG consumption.
-- `--executor` routes run B through the executor by wrapping `DiTSolver.decode_next` (same logic as the [D1](#d1-interface-and-hook) hook), and checks every patch went through it.
+- `--executor` attaches the executor to run B through the real `dit_executor` hook ([D1](#d1-interface-and-hook), now in the patch), and checks every patch went through it.
 
 ## Open questions
 
