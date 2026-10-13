@@ -1,4 +1,4 @@
-# dot-tts-baseline
+# adaptive-nfe
 
 Internal repo for the WAT.ai GPU systems team. Setting up the baseline for the NFE scheduler and GPU execution calls on dots.tts. Testing with a fixed scheduler first (same NFE every patch) to make sure hooking in doesn't change anything.
 
@@ -46,11 +46,11 @@ First run (Oct 11, RTX 5060 Laptop 8 GB, torch 2.8.0+cu128): **all pass**. Fixed
 WSL/Linux only (pynini won't build on Windows).
 
 ```bash
-git clone https://github.com/tonyyytan/dot-tts-baseline.git
+git clone https://github.com/Adaptive-Compute-For-TTS/adaptive-nfe.git
 git clone https://github.com/studio-dots-ai/dots.tts.git
 cd dots.tts && git switch -c scheduler-hook 3cb6f94
-git apply ../dot-tts-baseline/patches/dots_tts_scheduler_hook.patch
-cd ../dot-tts-baseline && bash scripts/setup_env.sh && source .venv/bin/activate
+git apply ../adaptive-nfe/patches/dots_tts_scheduler_hook.patch
+cd ../adaptive-nfe && bash scripts/setup_env.sh && source .venv/bin/activate
 python scripts/check_equivalence.py --nfe 4 10 32
 ```
 
