@@ -5,7 +5,7 @@ Our task: build the GPU execution/scheduler layer, fixed NFE for the baseline ph
 ## Where I'm at
 
 - The scheduler hook is in dots.tts and tested. With a fixed NFE, output is bit for bit identical to stock dots.tts at NFE 4, 10, 32 (2 sentences, every patch + final waveform, `torch.equal`). Results are in the README.
-- Repo: https://github.com/tonyyytan/dot-tts-baseline. Setup steps are in the README (WSL/Linux only).
+- Repo: https://github.com/Adaptive-Compute-For-TTS/adaptive-nfe. Setup steps are in the README (WSL/Linux only).
 - Everything is eager mode (`optimize=False`), bf16, seed 42, dots.tts commit `3cb6f94`.
 
 ## How dots.tts runs a patch (the part you'd be replacing or wrapping)
