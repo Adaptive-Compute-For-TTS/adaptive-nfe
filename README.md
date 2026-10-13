@@ -4,7 +4,7 @@ Internal repo for the WAT.ai GPU systems team. Setting up the baseline for the N
 
 ## Folders
 
-- `patches/`: our edit to dots.tts (the scheduler hook), saved as a git patch so anyone can apply it to their clone
+- `patches/`: our edit to dots.tts (the scheduler and executor hooks), saved as a git patch so anyone can apply it to their clone
 - `src/adaptive_nfe/`: the scheduler (`scheduler.py`) and the DiT executor (`executor.py`, `ode.py`)
 - `scripts/`: setup (`setup_env.sh`), the comparison test (`check_equivalence.py`), and `inspect_dit.py` for poking at the DiT
 - `tests/`: fast checks that need no model weights (`pytest tests/`)
@@ -17,7 +17,7 @@ dots.tts makes audio one patch (~160 ms) at a time, and each patch gets `num_ste
 
 Before doing anything smart, we checked that plugging a scheduler in gives the exact same output as stock dots.tts when it just returns a constant.
 
-- `patches/dots_tts_scheduler_hook.patch`: 11 line change to dots.tts `model.py`. Adds `model.nfe_scheduler` (None by default). If set, it gets asked for `num_steps` before each patch.
+- `patches/dots_tts_scheduler_hook.patch`: small change to dots.tts `model.py`. Adds `model.nfe_scheduler` and `model.dit_executor` (both None by default). If a scheduler is set, it gets asked for `num_steps` before each patch. If an executor is set, it runs the DiT for the patch instead of dots.tts's own solver (eager flow matching only, errors otherwise).
 - `src/adaptive_nfe/scheduler.py`: `Scheduler` base class (logs every choice) and `FixedScheduler(n)`.
 - `scripts/check_equivalence.py`: the test. Same seed, for each text and NFE N it runs stock twice (A, A2) and once with `FixedScheduler(N)` (B). B is called with `num_steps=1` so it only passes if the hook actually works. Compares every patch and the final audio with `torch.equal`, and counts DiT calls per patch.
 - `scripts/inspect_dit.py`: dumps velocity per step + EOS prob per patch. Might be useful later for deciding which patches are "hard".

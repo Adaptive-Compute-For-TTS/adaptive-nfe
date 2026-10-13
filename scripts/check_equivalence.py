@@ -7,14 +7,15 @@ For each text and each N, three runs with the same seed:
   B   scheduler:     generate(num_steps=DECOY) with FixedScheduler(N) attached. DECOY != N on purpose:
                       if the hook were ignored, B would run at DECOY steps and fail loudly.
 
-With --executor, B also runs every patch through adaptive_nfe.Executor instead of dots.tts's own
-DiTSolver (eager path), so the comparison checks the executor reproduces stock exactly.
+With --executor, B also attaches adaptive_nfe.Executor as model.dit_executor, so every patch runs
+through the executor instead of dots.tts's own DiTSolver (eager path). This checks the executor
+reproduces stock exactly when wired in through the real hook.
 
 Compared per run: every patch latent the DiT produced (torch.equal), and the final waveform.
 Also checked for B: the scheduler log says N for every patch, and the DiT really ran N times per patch
 (and, with --executor, that the executor decoded every patch).
 
-Needs the dots.tts clone on branch scheduler-hook. Exit code 1 if anything mismatches.
+Needs the dots.tts clone on branch scheduler-hook with patches/dots_tts_scheduler_hook.patch applied. Exit code 1 if anything mismatches.
 
 Example:
     python scripts/check_equivalence.py --nfe 4 10 32
@@ -36,7 +37,7 @@ import torch
 from adaptive_nfe import FixedScheduler
 from adaptive_nfe.executor import Executor
 from dots_tts.models.dots_tts.model import DotsTtsModel
-from dots_tts.modules.backbone.dit_inference import DiTSolver, EagerDiTRunner
+from dots_tts.modules.backbone.dit_inference import EagerDiTRunner
 from dots_tts.runtime import DotsTtsRuntime
 from dots_tts.utils.util import seed_everything
 
@@ -57,13 +58,13 @@ class Capture:
 
 
 current: Capture | None = None  # the run being recorded right now
-current_executor: Executor | None = None  # set during runs that should go through the executor
 
 
 def install_capture_hooks() -> None:
-    """Wrap two dots.tts functions so every run records its patches and step counts."""
+    """Wrap dots.tts and executor functions so every run records its patches and step counts."""
     decode_next_audio = DotsTtsModel._decode_next_audio
     velocity = EagerDiTRunner._flow_matching_velocity
+    decode_patch = Executor.decode_patch
 
     @functools.wraps(decode_next_audio)
     def decode_wrapper(self, state, **kwargs):
@@ -77,49 +78,23 @@ def install_capture_hooks() -> None:
         current.steps[-1] += 1  # one DiT evaluation (cond + uncond batched together)
         return velocity(*args, **kwargs)
 
+    @functools.wraps(decode_patch)
+    def decode_patch_wrapper(*args, **kwargs):
+        current.executor_patches += 1
+        return decode_patch(*args, **kwargs)
+
     DotsTtsModel._decode_next_audio = decode_wrapper
     EagerDiTRunner._flow_matching_velocity = velocity_wrapper
+    Executor.decode_patch = decode_patch_wrapper
 
-
-def install_executor_route() -> None:
-    """Send the eager flow-matching DiT call through `current_executor` when one is set.
-
-    Same effect as the hook in docs/design/executor-baseline.md (D1), without editing dots.tts.
-    """
-    decode_next = DiTSolver.decode_next
-
-    @functools.wraps(decode_next)
-    def decode_next_wrapper(self, state, **kwargs):
-        if current_executor is None or self.optimize or self.meanflow:
-            return decode_next(self, state, **kwargs)
-        self._validate_decode_args(
-            fm_seq_len=kwargs["fm_seq_len"],
-            nfe=kwargs["nfe"],
-            cfg_sequence=kwargs.get("cfg_sequence"),
-            guidance_scale=kwargs.get("guidance_scale"),
-        )
-        sequence, null_g_cond, g_cond = kwargs["sequence"], kwargs["null_g_cond"], kwargs["g_cond"]
-        g_cond = null_g_cond if g_cond is None else g_cond.to(device=null_g_cond.device, dtype=sequence.dtype)
-        current.executor_patches += 1
-        return current_executor.decode_patch(
-            sequence=sequence,
-            cfg_sequence=kwargs["cfg_sequence"],
-            fm_seq_len=int(kwargs["fm_seq_len"]),
-            g_cond=g_cond,
-            nfe=int(kwargs["nfe"]),
-            guidance_scale=kwargs["guidance_scale"],
-            ode_method=kwargs.get("ode_method", "euler"),
-        )
-
-    DiTSolver.decode_next = decode_next_wrapper
 
 
 def run(runtime: DotsTtsRuntime, text: str, *, num_steps: int, scheduler, seed: int,
         executor: Executor | None = None) -> Capture:
-    global current, current_executor
+    global current
     current = Capture()
-    current_executor = executor
     runtime.model.nfe_scheduler = scheduler
+    runtime.model.dit_executor = executor
     if scheduler is not None:
         scheduler.reset()
     seed_everything(seed)
@@ -127,7 +102,7 @@ def run(runtime: DotsTtsRuntime, text: str, *, num_steps: int, scheduler, seed: 
         result = runtime.generate(text=text, num_steps=num_steps)
     finally:
         runtime.model.nfe_scheduler = None
-        current_executor = None
+        runtime.model.dit_executor = None
     current.audio = result["audio"].detach().float().cpu()
     return current
 
@@ -167,7 +142,6 @@ def main() -> int:
     texts = args.text or DEFAULT_TEXTS
 
     install_capture_hooks()
-    install_executor_route()
     runtime = DotsTtsRuntime.from_pretrained(args.model, precision=args.precision, optimize=False)
     executor = Executor(runtime.model) if args.executor else None
     out_dir = Path(args.out_dir) / time.strftime("%Y%m%d-%H%M%S")
