@@ -6,7 +6,7 @@ Internal repo for the WAT.ai GPU systems team. Setting up the baseline for the N
 
 - `patches/`: our edit to dots.tts (the scheduler and executor hooks), saved as a git patch so anyone can apply it to their clone
 - `src/adaptive_nfe/`: the scheduler (`scheduler.py`) and the DiT executor (`executor.py`, `ode.py`)
-- `scripts/`: setup (`setup_env.sh`), the comparison test (`check_equivalence.py`), and `inspect_dit.py` for poking at the DiT
+- `scripts/`: setup (`setup_env.sh`), the comparison test (`check_equivalence.py`), the ml-evals benchmark runner (`run_benchmark.py`), and `inspect_dit.py` for poking at the DiT
 - `tests/`: fast checks that need no model weights (`pytest tests/`)
 - `docs/design/`: executor design (`executor-baseline.md`) and next-phase notes (`batching-exploration.md`)
 - `runs/`: results from running the scripts (reports, wavs). Not committed, it's in .gitignore
@@ -64,6 +64,18 @@ First run downloads the weights. Output ends up in `runs/equivalence/<timestamp>
 pytest tests/                                                  # no weights, CPU, seconds
 python scripts/check_equivalence.py --nfe 4 10 32 --executor   # full model through the executor
 ```
+
+### ml-evals benchmark
+
+`run_benchmark.py` runs the 54 prompts from [ml-evals](https://github.com/Adaptive-Compute-For-TTS/ml-evals) with the same settings and output layout as Nishant's `run_baseline.py` (soar, 10 steps, euler, CFG 1.2, seed 42), so the output can be scored by tts_eval_org. `--mode stock|scheduler|executor` picks the path. Expects `ml-evals` cloned next to this repo.
+
+```bash
+python scripts/run_benchmark.py --mode stock    --out-dir runs/benchmark/soar_steps10_stock
+python scripts/run_benchmark.py --mode executor --out-dir runs/benchmark/soar_steps10_executor \
+    --compare-to runs/benchmark/soar_steps10_stock/manifest.json
+```
+
+Compare runs with `audio_sha256`, not `wav_sha256`: float WAVs get a timestamped header chunk so the file hash changes every run. Our "NFE" = num_steps; ml-evals counts CFG twice (10 steps = "NFE 20").
 
 ## Todo
 
