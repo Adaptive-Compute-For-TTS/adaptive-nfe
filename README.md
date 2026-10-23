@@ -6,7 +6,7 @@ Internal repo for the WAT.ai GPU systems team. Setting up the baseline for the N
 
 - `patches/`: our edit to dots.tts (the scheduler and executor hooks), saved as a git patch so anyone can apply it to their clone
 - `src/adaptive_nfe/`: the scheduler (`scheduler.py`) and the DiT executor (`executor.py`, `ode.py`)
-- `scripts/`: setup (`setup_env.sh`), the comparison test (`check_equivalence.py`), the ml-evals benchmark runner (`run_benchmark.py`), and `inspect_dit.py` for poking at the DiT
+- `scripts/`: setup (`setup_env.sh`), the comparison test (`check_equivalence.py`), the ml-evals benchmark runner (`run_benchmark.py`), the demo command (`generate.py`: prompt + NFE → WAV), and `inspect_dit.py` for poking at the DiT
 - `tests/`: fast checks that need no model weights (`pytest tests/`)
 - `docs/design/`: executor design (`executor-baseline.md`) and next-phase notes (`batching-exploration.md`)
 - `runs/`: results from running the scripts (reports, wavs). Not committed, it's in .gitignore
@@ -76,6 +76,15 @@ python scripts/run_benchmark.py --mode executor --out-dir runs/benchmark/soar_st
 ```
 
 Compare runs with `audio_sha256`, not `wav_sha256`: float WAVs get a timestamped header chunk so the file hash changes every run. Our "NFE" = num_steps; ml-evals counts CFG twice (10 steps = "NFE 20").
+
+### Demo command (prompt + NFE → WAV)
+
+```bash
+python scripts/generate.py --prompt-id p004 --nfe 10 --verify-stock   # eager, our executor runs the DiT loop
+python scripts/generate.py --prompt-id p004 --nfe 10 --optimize       # dots.tts fast path (~3 min compile), stock DiT loop
+```
+
+Writes `runs/generate/<run_id>/` with `audio.wav`, `config.json`, `metrics.json` (nfe per patch, time, RTF, peak VRAM, checks). `--text`, `--ref-audio`/`--ref-text` also work. The executor doesn't support `--optimize` yet (its KV cache is built per NFE).
 
 ## Todo
 
