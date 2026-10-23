@@ -75,7 +75,7 @@ python scripts/run_benchmark.py --mode executor --out-dir runs/benchmark/soar_st
     --compare-to runs/benchmark/soar_steps10_stock/manifest.json
 ```
 
-Compare runs with `audio_sha256`, not `wav_sha256`: float WAVs get a timestamped header chunk so the file hash changes every run. Our "NFE" = num_steps; ml-evals counts CFG twice (10 steps = "NFE 20").
+Compare runs with `audio_sha256`, not `wav_sha256`: float WAVs get a timestamped header chunk so the file hash changes every run. NFE = num_steps everywhere (team convention). Nishant's first baseline says `nfe_estimate: 20`, that's the old CFG x 2 count, it's NFE 10.
 
 ### Demo command (prompt + NFE → WAV)
 

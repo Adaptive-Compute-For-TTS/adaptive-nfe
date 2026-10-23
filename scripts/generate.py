@@ -8,7 +8,7 @@ Every patch gets the same NFE (FixedScheduler). Two paths:
 --verify-stock also runs plain dots.tts (no hooks, same seed, same path) and checks the audio is bit-identical.
 
 NFE here = dots.tts num_steps. CFG batches cond + uncond into the same DiT call, so NFE 10 is 10 DiT
-calls per patch. ml-evals counts CFG twice and would call this "NFE 20".
+calls per patch. Team convention (ml-evals too): NFE = num_steps.
 
 Output, in <out-dir>/<run_id>/:
     audio.wav       float32

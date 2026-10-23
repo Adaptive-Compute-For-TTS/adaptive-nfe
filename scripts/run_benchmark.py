@@ -15,8 +15,8 @@ can be dropped into ml-evals/baselines/ and scored by tts_eval_org like Nishant'
 --compare-to <manifest.json> checks audio_sha256 (hash of the samples) per prompt id against another run. Only meaningful for a
 run on the same GPU + software (Nishant's 3090 hashes won't match a 5060 even for stock).
 
-Note: --num-steps is dots.tts num_steps. ml-evals calls 10 steps "NFE 20" because CFG runs cond +
-uncond per step; in this repo NFE = num_steps.
+Note: --num-steps is dots.tts num_steps = NFE (team convention). Nishant's first baseline config says
+nfe_estimate=20 for 10 steps; that was the old steps x 2 CFG count, it's NFE 10.
 
 Example:
     python scripts/run_benchmark.py --mode stock    --out-dir runs/benchmark/soar_steps10_stock
