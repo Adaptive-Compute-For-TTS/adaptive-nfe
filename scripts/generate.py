@@ -25,7 +25,6 @@ Examples:
 from __future__ import annotations
 
 import argparse
-import functools
 import hashlib
 import importlib.metadata as meta
 import json
@@ -35,7 +34,7 @@ from pathlib import Path
 
 import soundfile as sf
 import torch
-from adaptive_nfe import FixedScheduler
+from adaptive_nfe import generate_fixed_nfe
 from adaptive_nfe.executor import Executor
 from dots_tts.runtime import DotsTtsRuntime
 
@@ -52,20 +51,6 @@ def seed_all(s: int) -> None:
     torch.manual_seed(s)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(s)
-
-
-def count_executor_calls(executor: Executor) -> list[int]:
-    """Wrap executor.decode_patch to record the nfe of every patch it decodes."""
-    calls: list[int] = []
-    decode_patch = executor.decode_patch
-
-    @functools.wraps(decode_patch)
-    def wrapper(**kwargs):
-        calls.append(kwargs["nfe"])
-        return decode_patch(**kwargs)
-
-    executor.decode_patch = wrapper
-    return calls
 
 
 def main() -> int:
@@ -103,45 +88,36 @@ def main() -> int:
     rt = DotsTtsRuntime.from_pretrained(a.model, precision=a.precision, optimize=a.optimize)
     ode, steps, cfg = rt.resolve_sampling_options(ode_method=None, num_steps=a.nfe, guidance_scale=a.guidance_scale)
     gen_kwargs = dict(text=text, prompt_audio_path=a.ref_audio, prompt_text=a.ref_text, ode_method=ode,
-                      num_steps=steps, guidance_scale=cfg, speaker_scale=a.speaker_scale)
-
-    scheduler = FixedScheduler(steps)
+                      guidance_scale=cfg, speaker_scale=a.speaker_scale)
     executor = None if a.optimize else Executor(rt.model)
-    executor_calls = count_executor_calls(executor) if executor else []
 
-    def generate(hooked: bool) -> dict:
-        rt.model.nfe_scheduler = scheduler if hooked else None
-        rt.model.dit_executor = executor if hooked else None
-        scheduler.reset()
-        executor_calls.clear()
+    def generate():
+        # generate_fixed_nfe raises if any patch missed the NFE or the executor.
         if torch.cuda.is_available():
             torch.cuda.reset_peak_memory_stats()
         seed_all(a.seed)
-        try:
-            return rt.generate(**gen_kwargs)
-        finally:
-            rt.model.nfe_scheduler = None
-            rt.model.dit_executor = None
+        return generate_fixed_nfe(rt, steps, use_executor=not a.optimize, executor=executor, **gen_kwargs)
 
     path = "optimize (stock DiT fast path)" if a.optimize else "eager + executor"
     print(f"run_id={run_id}  path={path}  nfe={steps}  cfg={cfg}  text={text!r}")
     if not a.no_warmup and not a.optimize:  # --optimize already warms up inside from_pretrained
         print("Warming up (discarded)...")
-        generate(hooked=True)
+        generate()
 
-    r = generate(hooked=True)
+    result = generate()
+    r, nfe_per_patch = result.output, result.nfe_per_patch
     peak_vram_mb = torch.cuda.max_memory_allocated() / 2**20 if torch.cuda.is_available() else None
-    nfe_per_patch = [h["nfe"] for h in scheduler.history]
     sr = r["sample_rate"]
     sf.write(out / "audio.wav", r["audio"].float().cpu().squeeze().numpy(), sr, subtype="FLOAT")
 
     checks = {
         "nfe_fixed_all_patches": len(nfe_per_patch) > 0 and set(nfe_per_patch) == {steps},
         # eager: the executor decoded every patch at the chosen NFE
-        "executor_used_all_patches": None if a.optimize else executor_calls == nfe_per_patch,
+        "executor_used_all_patches": None if a.optimize else result.executor_nfe_per_patch == nfe_per_patch,
     }
     if a.verify_stock:
-        stock = generate(hooked=False)
+        seed_all(a.seed)
+        stock = rt.generate(num_steps=steps, **gen_kwargs)  # no hooks: plain dots.tts
         checks["stock_identical"] = audio_sha256(stock["audio"]) == audio_sha256(r["audio"])
 
     metrics = dict(

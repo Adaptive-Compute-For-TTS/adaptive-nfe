@@ -5,9 +5,9 @@ Internal repo for the WAT.ai GPU systems team. Setting up the baseline for the N
 ## Folders
 
 - `patches/`: our edit to dots.tts (the scheduler and executor hooks), saved as a git patch so anyone can apply it to their clone
-- `src/adaptive_nfe/`: the scheduler (`scheduler.py`) and the DiT executor (`executor.py`, `ode.py`)
+- `src/adaptive_nfe/`: the scheduler (`scheduler.py`), the DiT executor (`executor.py`, `ode.py`), and `generate_fixed_nfe` (`fixed_nfe.py`: one NFE frozen for a whole utterance)
 - `scripts/`: setup (`setup_env.sh`), the comparison test (`check_equivalence.py`), the ml-evals benchmark runner (`run_benchmark.py`), the demo command (`generate.py`: prompt + NFE → WAV), and `inspect_dit.py` for poking at the DiT
-- `tests/`: fast checks that need no model weights (`pytest tests/`)
+- `tests/`: fast checks that need no model weights (`pytest tests/`), plus `test_fixed_nfe_gpu.py`, which runs the real model and skips without CUDA
 - `docs/design/`: executor design (`executor-baseline.md`) and next-phase notes (`batching-exploration.md`)
 - `runs/`: results from running the scripts (reports, wavs). Not committed, it's in .gitignore
 
@@ -101,6 +101,23 @@ python scripts/generate.py --prompt-id p004 --nfe 10 --optimize       # dots.tts
 ```
 
 Writes `runs/generate/<run_id>/` with `audio.wav`, `config.json`, `metrics.json` (nfe per patch, time, RTF, peak VRAM, checks). `--text`, `--ref-audio`/`--ref-text` also work. The executor doesn't support `--optimize` yet (its KV cache is built per NFE).
+
+### From Python (selector hookup)
+
+`generate.py` is a wrapper around `generate_fixed_nfe`, which is the call a selector hands its NFE to. It takes the NFE once, freezes it for every patch, runs each patch through the executor, and raises if any patch got a different NFE or skipped the executor. Hooks are restored afterwards.
+
+```python
+from adaptive_nfe import generate_fixed_nfe
+
+torch.manual_seed(42)                      # seeding is the caller's job
+result = generate_fixed_nfe(rt, nfe=10, text="Hello there.", guidance_scale=1.2)
+result.output["audio"], result.num_patches, result.nfe_per_patch
+```
+
+```bash
+pytest tests/test_fixed_nfe_gpu.py -v      # real model on CUDA: frozen NFE, executor on every patch, identical to stock
+ADAPTIVE_NFE_MODEL=dots-studio/dots.tts-soar pytest tests/test_fixed_nfe_gpu.py -v
+```
 
 ## Todo
 
