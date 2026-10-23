@@ -41,6 +41,22 @@ First run (Oct 11, RTX 5060 Laptop 8 GB, torch 2.8.0+cu128): **all pass**. Fixed
 
 **Executor** (`--executor`, same setup, torchdiffeq 0.2.5): **all pass**. Running B through `adaptive_nfe.Executor` instead of dots.tts's solver gives the same table: every patch and the waveform identical to stock, same patch counts (23/22/21, 29/27/28), N DiT calls per patch, and every patch went through the executor. `pytest tests/`: 163 passed.
 
+**Demo command** (`generate.py --verify-stock`, Oct 23, dots.tts-base, same setup): **all pass**. Prompt + NFE → WAV through the executor, 3 benchmark prompts × NFE 4/10/32. Every run: the chosen NFE on every patch, the executor decoded every patch, audio identical to stock (sample hash).
+
+| prompt | NFE | patches | audio | time | RTF |
+|---|---|---|---|---|---|
+| p001 (short) | 4 | 15 | 2.40 s | 2.0 s | 0.84 |
+| | 10 | 15 | 2.40 s | 7.0 s | 2.90 |
+| | 32 | 18 | 2.88 s | 14.0 s | 4.88 |
+| p004 (medium) | 4 | 39 | 6.24 s | 5.1 s | 0.82 |
+| | 10 | 41 | 6.56 s | 9.1 s | 1.39 |
+| | 32 | 32 | 5.12 s | 26.4 s | 5.15 |
+| p007 (long) | 4 | 72 | 11.52 s | 10.5 s | 0.91 |
+| | 10 | 77 | 12.32 s | 21.0 s | 1.71 |
+| | 32 | 76 | 12.16 s | 57.9 s | 4.76 |
+
+Times are from a laptop GPU and jump around (p004 NFE 10 took 432 s the first time with the lid closed, 9.1 s on rerun), so don't quote them as latency numbers. `--optimize` not tested yet.
+
 ## Running it
 
 WSL/Linux only (pynini won't build on Windows).
