@@ -1,7 +1,7 @@
 """Generate one utterance at one fixed NFE: the call a selector (or a script) hands its NFE to.
 
 The NFE is accepted once and frozen for every patch (FixedScheduler). By default every patch's DiT
-loop runs through our Euler Executor. Afterwards the per-patch log is checked: every patch got that
+loop runs through our Euler Executor, on either path (optimize=False or True). Afterwards the per-patch log is checked: every patch got that
 NFE, and the executor decoded every patch the scheduler saw. Any mismatch raises.
 
     rt = DotsTtsRuntime.from_pretrained("dots-studio/dots.tts-soar", precision="bfloat16", optimize=False)
@@ -45,13 +45,16 @@ class _RecordingExecutor:
         self.calls.append(kwargs["nfe"])
         return self.executor.decode_patch(**kwargs)
 
+    def decode_patch_optimized(self, **kwargs):
+        self.calls.append(kwargs["nfe"])
+        return self.executor.decode_patch_optimized(**kwargs)
+
 
 def generate_fixed_nfe(runtime, nfe: int, *, use_executor: bool = True, executor=None, **generate_kwargs) -> FixedNFEResult:
     """Run runtime.generate(**generate_kwargs) with every patch frozen at `nfe`, then check the patch log.
 
     `executor`: reuse an existing adaptive_nfe.Executor across calls; one is built when None.
-    `use_executor=False` keeps dots.tts's own DiT solver (the scheduler still freezes the NFE), which is
-    what the optimize=True runtime needs since the executor is eager only.
+    `use_executor=False` keeps dots.tts's own DiT solver (the scheduler still freezes the NFE).
     """
     nfe = int(nfe)
     if nfe <= 0:
@@ -59,9 +62,6 @@ def generate_fixed_nfe(runtime, nfe: int, *, use_executor: bool = True, executor
     if generate_kwargs.setdefault("num_steps", nfe) != nfe:
         raise ValueError(f"num_steps={generate_kwargs['num_steps']} conflicts with nfe={nfe}; pass only nfe.")
     model = runtime.model
-    if use_executor and getattr(model, "_optimize_enabled", False):
-        raise NotImplementedError("The executor only supports optimize=False; pass use_executor=False.")
-
     scheduler = FixedScheduler(nfe)
     recorder = None
     if use_executor:
@@ -69,6 +69,9 @@ def generate_fixed_nfe(runtime, nfe: int, *, use_executor: bool = True, executor
             from adaptive_nfe.executor import Executor  # imports dots.tts, so only when needed
 
             executor = Executor(model)
+        if getattr(model, "_optimize_enabled", False) and not hasattr(executor, "decode_patch_optimized"):
+            raise NotImplementedError("This executor has no decode_patch_optimized (optimize=True); "
+                                      "pass use_executor=False.")
         recorder = _RecordingExecutor(executor)
 
     saved = (model.nfe_scheduler, model.dit_executor)

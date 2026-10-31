@@ -8,8 +8,11 @@ For each text and each N, three runs with the same seed:
                       if the hook were ignored, B would run at DECOY steps and fail loudly.
 
 With --executor, B also attaches adaptive_nfe.Executor as model.dit_executor, so every patch runs
-through the executor instead of dots.tts's own DiTSolver (eager path). This checks the executor
-reproduces stock exactly when wired in through the real hook.
+through the executor instead of dots.tts's own DiTSolver. This checks the executor reproduces stock
+exactly when wired in through the real hook.
+
+With --optimize, all three runs use dots.tts's optimized path (optimize=True: KV cache + compiled
+steps, ~3 min warmup), so A is stock optimized dots.tts and the executor runs decode_patch_optimized.
 
 Compared per run: every patch latent the DiT produced (torch.equal), and the final waveform.
 Also checked for B: the scheduler log says N for every patch, and the DiT really ran N times per patch
@@ -20,6 +23,7 @@ Needs the dots.tts clone on branch scheduler-hook with patches/dots_tts_schedule
 Example:
     python scripts/check_equivalence.py --nfe 4 10 32
     python scripts/check_equivalence.py --nfe 4 10 32 --executor
+    python scripts/check_equivalence.py --nfe 4 10 32 --executor --optimize
 """
 
 from __future__ import annotations
@@ -37,7 +41,7 @@ import torch
 from adaptive_nfe import FixedScheduler
 from adaptive_nfe.executor import Executor
 from dots_tts.models.dots_tts.model import DotsTtsModel
-from dots_tts.modules.backbone.dit_inference import EagerDiTRunner
+from dots_tts.modules.backbone.dit_inference import CachedDiTRunner, EagerDiTRunner
 from dots_tts.runtime import DotsTtsRuntime
 from dots_tts.utils.util import seed_everything
 
@@ -57,35 +61,55 @@ class Capture:
     executor_patches: int = 0  # patches decoded by the Executor instead of DiTSolver
 
 
-current: Capture | None = None  # the run being recorded right now
+current: Capture | None = None  # the run being recorded right now (None during the optimize warmup)
 
 
 def install_capture_hooks() -> None:
     """Wrap dots.tts and executor functions so every run records its patches and step counts."""
     decode_next_audio = DotsTtsModel._decode_next_audio
     velocity = EagerDiTRunner._flow_matching_velocity
+    cached_runner_init = CachedDiTRunner.__init__
     decode_patch = Executor.decode_patch
+    decode_patch_optimized = Executor.decode_patch_optimized
 
     @functools.wraps(decode_next_audio)
     def decode_wrapper(self, state, **kwargs):
+        if current is None:
+            return decode_next_audio(self, state, **kwargs)
         current.steps.append(0)
         patch = decode_next_audio(self, state, **kwargs)
         current.patches.append(patch.detach().float().cpu().clone())
         return patch
 
-    @functools.wraps(velocity)
-    def velocity_wrapper(*args, **kwargs):
-        current.steps[-1] += 1  # one DiT evaluation (cond + uncond batched together)
-        return velocity(*args, **kwargs)
+    def count_dit_call(fn):
+        @functools.wraps(fn)
+        def wrapper(*args, **kwargs):
+            if current is not None:
+                current.steps[-1] += 1  # one DiT evaluation (cond + uncond batched together)
+            return fn(*args, **kwargs)
+        return wrapper
 
-    @functools.wraps(decode_patch)
-    def decode_patch_wrapper(*args, **kwargs):
-        current.executor_patches += 1
-        return decode_patch(*args, **kwargs)
+    # Optimized path: each DiT evaluation is one call to a runner's compiled step / current_step
+    # (prefill is cache setup, not a step). Runners are built lazily, so wrap them as they're made.
+    @functools.wraps(cached_runner_init)
+    def cached_runner_init_wrapper(self, *args, **kwargs):
+        cached_runner_init(self, *args, **kwargs)
+        self.step = count_dit_call(self.step)
+        self.current_step = count_dit_call(self.current_step)
+
+    def count_executor_patch(fn):
+        @functools.wraps(fn)
+        def wrapper(*args, **kwargs):
+            if current is not None:
+                current.executor_patches += 1
+            return fn(*args, **kwargs)
+        return wrapper
 
     DotsTtsModel._decode_next_audio = decode_wrapper
-    EagerDiTRunner._flow_matching_velocity = velocity_wrapper
-    Executor.decode_patch = decode_patch_wrapper
+    EagerDiTRunner._flow_matching_velocity = count_dit_call(velocity)
+    CachedDiTRunner.__init__ = cached_runner_init_wrapper
+    Executor.decode_patch = count_executor_patch(decode_patch)
+    Executor.decode_patch_optimized = count_executor_patch(decode_patch_optimized)
 
 
 
@@ -138,11 +162,12 @@ def main() -> int:
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--out-dir", default="runs/equivalence")
     p.add_argument("--executor", action="store_true", help="Run B's DiT through adaptive_nfe.Executor.")
+    p.add_argument("--optimize", action="store_true", help="All runs on dots.tts's optimized path (optimize=True).")
     args = p.parse_args()
     texts = args.text or DEFAULT_TEXTS
 
     install_capture_hooks()
-    runtime = DotsTtsRuntime.from_pretrained(args.model, precision=args.precision, optimize=False)
+    runtime = DotsTtsRuntime.from_pretrained(args.model, precision=args.precision, optimize=args.optimize)
     executor = Executor(runtime.model) if args.executor else None
     out_dir = Path(args.out_dir) / time.strftime("%Y%m%d-%H%M%S")
     out_dir.mkdir(parents=True, exist_ok=True)

@@ -5,8 +5,9 @@
 
 Every patch gets the same NFE (FixedScheduler). Two paths:
   default     eager (optimize=False). Our Executor runs each patch's DiT loop via the dit_executor hook.
-  --optimize  dots.tts's fast path (torch.compile + DiT KV cache, ~3 min warmup, CUDA only). The executor
-              doesn't support it yet, so the DiT loop is stock dots.tts; the scheduler still sets NFE per patch.
+  --optimize  dots.tts's fast path (torch.compile + DiT KV cache, ~3 min warmup, CUDA only). Our Executor
+              runs each patch's loop on the fast path (decode_patch_optimized), reusing dots.tts's compiled steps.
+  --stock-loop keeps dots.tts's own DiT loop on either path; the scheduler still sets NFE per patch.
 
 --verify-stock also runs plain dots.tts (no hooks, same seed, same path) and checks the audio is bit-identical.
 
@@ -71,7 +72,8 @@ def main() -> int:
     p.add_argument("--speaker-scale", type=float, default=1.5)
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--precision", default="bfloat16")
-    p.add_argument("--optimize", action="store_true", help="dots.tts fast path; no executor (see top).")
+    p.add_argument("--optimize", action="store_true", help="dots.tts fast path (see top).")
+    p.add_argument("--stock-loop", action="store_true", help="dots.tts's own DiT loop instead of our executor.")
     p.add_argument("--verify-stock", action="store_true", help="also run plain dots.tts and compare audio")
     p.add_argument("--no-warmup", action="store_true", help="skip the discarded warmup run per NFE (latency less accurate)")
     p.add_argument("--out-dir", default="runs/generate")
@@ -88,8 +90,9 @@ def main() -> int:
         texts = [(None, a.text)]
 
     rt = DotsTtsRuntime.from_pretrained(a.model, precision=a.precision, optimize=a.optimize)
-    executor = None if a.optimize else Executor(rt.model)
-    path = "optimize (stock DiT fast path)" if a.optimize else "eager + executor"
+    use_executor = not a.stock_loop
+    executor = Executor(rt.model) if use_executor else None
+    path = ("optimize" if a.optimize else "eager") + (" + executor" if use_executor else " (stock DiT loop)")
     stamp = time.strftime("%Y%m%d-%H%M%S")
     single = len(texts) * len(a.nfe) == 1
 
@@ -101,7 +104,7 @@ def main() -> int:
             # num_steps; the first run at a new NFE still pays for new KV cache / CUDA graph setup.
             print(f"Warming up nfe={steps} (discarded)...")
             seed_all(a.seed)
-            generate_fixed_nfe(rt, steps, use_executor=not a.optimize, executor=executor, text=texts[0][1],
+            generate_fixed_nfe(rt, steps, use_executor=use_executor, executor=executor, text=texts[0][1],
                                prompt_audio_path=a.ref_audio, prompt_text=a.ref_text, ode_method=ode,
                                guidance_scale=cfg, speaker_scale=a.speaker_scale)
         for prompt_id, text in texts:
@@ -122,7 +125,7 @@ def run_one(a, rt, executor, path, run_id, prompt_id, text, ode, steps, cfg) -> 
     if torch.cuda.is_available():
         torch.cuda.reset_peak_memory_stats()
     seed_all(a.seed)
-    result = generate_fixed_nfe(rt, steps, use_executor=not a.optimize, executor=executor, **gen_kwargs)
+    result = generate_fixed_nfe(rt, steps, use_executor=executor is not None, executor=executor, **gen_kwargs)
     r, nfe_per_patch = result.output, result.nfe_per_patch
     peak_vram_mb = torch.cuda.max_memory_allocated() / 2**20 if torch.cuda.is_available() else None
     sr = r["sample_rate"]
@@ -130,8 +133,8 @@ def run_one(a, rt, executor, path, run_id, prompt_id, text, ode, steps, cfg) -> 
 
     checks = {
         "nfe_fixed_all_patches": len(nfe_per_patch) > 0 and set(nfe_per_patch) == {steps},
-        # eager: the executor decoded every patch at the chosen NFE
-        "executor_used_all_patches": None if a.optimize else result.executor_nfe_per_patch == nfe_per_patch,
+        # the executor decoded every patch at the chosen NFE (None with --stock-loop)
+        "executor_used_all_patches": None if executor is None else result.executor_nfe_per_patch == nfe_per_patch,
     }
     if a.verify_stock:
         seed_all(a.seed)
@@ -148,6 +151,7 @@ def run_one(a, rt, executor, path, run_id, prompt_id, text, ode, steps, cfg) -> 
     config = dict(
         run_id=run_id, model=a.model, ode_method=ode, num_steps=steps, guidance_scale=cfg,
         speaker_scale=a.speaker_scale, seed=a.seed, precision=a.precision, optimize=a.optimize,
+        executor=executor is not None,
         ref_audio=a.ref_audio, ref_text=a.ref_text, sample_rate=sr, dots_tts_version=meta.version("dots.tts"),
         torch=torch.__version__, cuda=torch.version.cuda,
         gpu=torch.cuda.get_device_name(0) if torch.cuda.is_available() else None, argv=sys.argv,

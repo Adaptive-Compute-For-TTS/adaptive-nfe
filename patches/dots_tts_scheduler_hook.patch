@@ -1,5 +1,5 @@
 diff --git a/src/dots_tts/models/dots_tts/model.py b/src/dots_tts/models/dots_tts/model.py
-index 98c6cc2..9fd07f7 100644
+index 98c6cc2..61df040 100644
 --- a/src/dots_tts/models/dots_tts/model.py
 +++ b/src/dots_tts/models/dots_tts/model.py
 @@ -142,6 +142,9 @@ class DotsTtsModel(nn.Module):
@@ -28,27 +28,46 @@ index 98c6cc2..9fd07f7 100644
              sampling = self.config.sampling
              if sampling is not None:
                  sampling.resolve(
-@@ -1225,6 +1237,27 @@ class DotsTtsModel(nn.Module):
+@@ -1225,6 +1237,46 @@ class DotsTtsModel(nn.Module):
              solver_cfg_sequence = (
                  cfg_sequence if solver_mode == "flow_matching" else None
              )
 +            # Execution hook: an attached executor runs the DiT for this patch instead of
-+            # the built-in solver. None (the default) keeps the original path.
++            # the built-in solver. None (the default) keeps the original path. With
++            # optimize=True it gets decode_patch_optimized plus the solver and this
++            # request's KV cache state, since the optimized path decodes differently.
 +            dit_executor = getattr(self, "dit_executor", None)
 +            if dit_executor is not None:
-+                if solver_mode != "flow_matching" or self._optimize_enabled:
-+                    raise NotImplementedError(
-+                        "dit_executor only supports flow_matching with optimize=False."
++                if solver_mode != "flow_matching":
++                    raise NotImplementedError("dit_executor only supports flow_matching.")
++                resolved_g_cond = (
++                    null_g_cond
++                    if g_cond is None
++                    else g_cond.to(device=null_g_cond.device, dtype=sequence.dtype)
++                )
++                if self._optimize_enabled:
++                    decode_patch_optimized = getattr(
++                        dit_executor, "decode_patch_optimized", None
++                    )
++                    if decode_patch_optimized is None:
++                        raise NotImplementedError(
++                            "dit_executor has no decode_patch_optimized; use optimize=False."
++                        )
++                    return decode_patch_optimized(
++                        solver=self._get_dit_solver(solver_mode=solver_mode),
++                        state=state.fm_dit_state,
++                        sequence=sequence,
++                        cfg_sequence=solver_cfg_sequence,
++                        fm_seq_len=state.fm_seq_len,
++                        g_cond=resolved_g_cond,
++                        nfe=num_steps,
++                        guidance_scale=guidance_scale,
 +                    )
 +                return dit_executor.decode_patch(
 +                    sequence=sequence,
 +                    cfg_sequence=solver_cfg_sequence,
 +                    fm_seq_len=state.fm_seq_len,
-+                    g_cond=(
-+                        null_g_cond
-+                        if g_cond is None
-+                        else g_cond.to(device=null_g_cond.device, dtype=sequence.dtype)
-+                    ),
++                    g_cond=resolved_g_cond,
 +                    nfe=num_steps,
 +                    ode_method=ode_method,
 +                    guidance_scale=guidance_scale,
