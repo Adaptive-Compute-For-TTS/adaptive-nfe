@@ -9,3 +9,6 @@
 
 # Equivalence tests.
 pytest
+
+# Charts (scripts/plot_results.py).
+matplotlib
