@@ -94,9 +94,40 @@ def test_rejects_conflicting_num_steps():
         generate_fixed_nfe(FakeRuntime(), 10, executor=FakeExecutor(), num_steps=32)
 
 
-def test_executor_refused_on_optimized_runtime():
+def test_executor_without_optimized_path_refused_on_optimized_runtime():
     rt = FakeRuntime()
     rt.model._optimize_enabled = True
     with pytest.raises(NotImplementedError):
         generate_fixed_nfe(rt, 10, executor=FakeExecutor())
     assert generate_fixed_nfe(rt, 10, use_executor=False).num_patches == 5
+
+
+class FakeOptimizedExecutor(FakeExecutor):
+    def decode_patch_optimized(self, *, nfe, **kwargs):
+        self.calls.append(nfe)
+        return "latent"
+
+
+class FakeOptimizedRuntime(FakeRuntime):
+    """Like FakeRuntime, but the executor hook calls decode_patch_optimized, as dots.tts does with optimize=True."""
+
+    def __init__(self, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self.model._optimize_enabled = True
+
+    def generate(self, **kwargs):
+        executor = self.model.dit_executor
+        if executor is not None:
+            self.model.dit_executor = types.SimpleNamespace(decode_patch=executor.decode_patch_optimized)
+        try:
+            return super().generate(**kwargs)
+        finally:
+            self.model.dit_executor = executor
+
+
+def test_optimized_runtime_runs_every_patch_through_decode_patch_optimized():
+    rt, ex = FakeOptimizedRuntime(num_patches=6), FakeOptimizedExecutor()
+    r = generate_fixed_nfe(rt, 4, executor=ex, text="hi")
+    assert r.nfe_per_patch == [4] * 6
+    assert r.executor_nfe_per_patch == ex.calls == [4] * 6
+    assert rt.model.dit_executor is None

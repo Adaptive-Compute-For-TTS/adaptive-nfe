@@ -1,9 +1,11 @@
 """DiT execution layer: runs the flow-matching ODE for one audio patch at a given NFE.
 
-Baseline version: one request, eager mode (optimize=False), Euler only. It must produce exactly
-what stock DiTSolver.decode_next produces, so it reuses dots.tts's own input preparation and DiT
-call (EagerDiTRunner) and owns only the noise draw and the ODE loop. See
-docs/design/executor-baseline.md.
+Baseline version: one request, Euler only. It must produce exactly what stock DiTSolver.decode_next
+produces, so it reuses dots.tts's own input preparation and DiT call (EagerDiTRunner) and owns only
+the noise draw and the ODE loop. See docs/design/executor-baseline.md.
+
+decode_patch is the eager path (optimize=False). decode_patch_optimized is the optimized path
+(optimize=True, KV cache + compiled steps), which does slightly different math; see optimized.py.
 
     executor = Executor(runtime.model)
     patch = executor.decode_patch(sequence=..., cfg_sequence=..., fm_seq_len=..., g_cond=...,
@@ -16,6 +18,7 @@ import torch
 from dots_tts.modules.backbone.dit_inference import DiTInferenceContext, EagerDiTRunner
 
 from adaptive_nfe.ode import euler_integrate
+from adaptive_nfe.optimized import decode_patch_optimized
 
 
 class Executor:
@@ -74,3 +77,8 @@ class Executor:
             )
 
         return euler_integrate(velocity, noise, nfe)
+
+    def decode_patch_optimized(self, **kwargs) -> torch.Tensor:
+        """Optimized path (optimize=True). The dots.tts hook passes the solver and this request's
+        DiTSolverState along with the decode_patch arguments; see optimized.py."""
+        return decode_patch_optimized(**kwargs)
